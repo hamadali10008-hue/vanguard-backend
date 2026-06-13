@@ -4,15 +4,13 @@ using Microsoft.IdentityModel.Tokens;
 using Saas.Api.Services;
 using Saas.Application.Interfaces;
 using Saas.Application.Services;
-
 using Saas.Appplication.Services;
 using Saas.Infrastructure.Data;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
 
-// 1. THE NET CORE CURE: Clear default legacy mapping schemas so clean strings like "TenantId" pass through unrenamed
+// 1. THE NET CORE CURE
 JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
-
 var builder = WebApplication.CreateBuilder(args);
 
 // --- 2. DATABASE CONFIGURATION ---
@@ -23,9 +21,7 @@ builder.Services.AddScoped<IApplicationDbContext>(provider =>
     provider.GetService<ApplicationDbContext>()!);
 
 // --- 3. CRYPTOGRAPHIC JWT SECURITY ARCHITECTURE ---
-// 💡 Real, secure 256-bit signing token key string (64 characters = 32 bytes)
 const string securityMasterKey = "8KcvKmWDF2sqnXi5i4JFNRRQzLUG/QUzDJe7eIJ6XFg=";
-
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -43,20 +39,20 @@ builder.Services.AddAuthentication(options =>
         ValidIssuer = "SaasApi",
         ValidAudience = "SaasFrontend",
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(securityMasterKey)),
-        RoleClaimType = "role" // 💡 Keeps backend [Authorize(Roles="Admin")] perfectly mapped to our lowercase frontend string
+        RoleClaimType = "role"
     };
 });
 
 // --- 4. CORS CONTROL GATEWAYS ---
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowNextJS",
+    options.AddPolicy("AllowFrontend",
         policy =>
         {
-            policy.WithOrigins("https://vanguard-frontend-p0og6640o-hamadali10008-hues-projects.vercel.app/")
+            policy.WithOrigins("http://localhost:3000", "https://saasvanguard.vercel.app")
                   .AllowAnyHeader()
                   .AllowAnyMethod()
-                  .AllowCredentials(); // Standard requirement for enterprise state sharing
+                  .AllowCredentials();
         });
 });
 
@@ -77,22 +73,41 @@ builder.Services.AddScoped<EmailService>();
 
 var app = builder.Build();
 
-// --- 6. HTTP REQUEST PIPELINE (THE EXECUTION FLOW ORDER IS CRITICAL HERE) ---
+// --- 🛠️ AUTOMATED DATABASE CREATION & MIGRATION ENGINE ---
+// This runs asynchronously on startup to fix Error 4060 inside AWS RDS automatically
+using (var scope = app.Services.CreateScope())
+{
+    var services = scope.ServiceProvider;
+    try
+    {
+        var context = services.GetRequiredService<ApplicationDbContext>();
+
+        // This checks for pending migrations and applies them. 
+        // If the database does not exist, it creates it first.
+        await context.Database.MigrateAsync();
+    }
+    catch (Exception ex)
+    {
+        var logger = services.GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "An automated exception occurred while provisioning or migrating SaasDb.");
+    }
+}
+
+// --- 6. HTTP REQUEST PIPELINE ---
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.UseSwagger();
     app.UseSwaggerUI();
+
+    // Only force HTTPS redirection locally.
+    app.UseHttpsRedirection();
 }
 
-app.UseHttpsRedirection();
-
-// 💡 CORS must execute BEFORE Authentication/Authorization so pre-flight browser checks don't throw 401s
-app.UseCors("AllowNextJS");
-
-app.UseAuthentication(); // 1. Who are you? (Parses the token)
-app.UseAuthorization();  // 2. What are you allowed to see? (Checks Roles)
-
+// CORS must execute BEFORE Authentication/Authorization
+app.UseCors("AllowFrontend");
+app.UseAuthentication();
+app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
